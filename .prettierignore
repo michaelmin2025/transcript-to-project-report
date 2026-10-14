@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+coverage/
+package-lock.json
+
+# JavaScript and JSX are formatted by ESLint Stylistic.
+**/*.js
+**/*.jsx
+**/*.mjs
+**/*.cjs

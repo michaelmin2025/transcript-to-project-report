@@ -10,13 +10,13 @@ No required meeting date or setup form.
 
 ## First version
 
-| Section | Content |
-|---|---|
+| Section           | Content                                                                   |
+| ----------------- | ------------------------------------------------------------------------- |
 | Executive summary | Progress, key decisions, risks, blockers, and leadership attention needed |
-| Task list | Tasks, owners, status, and dates |
-| Milestones | Major deliverables, target dates, and status |
-| Timeline | Events and planned work in chronological order, with stated dependencies |
-| Project scope | Objectives, deliverables, exclusions, and scope changes |
+| Task list         | Tasks, owners, status, and dates                                          |
+| Milestones        | Major deliverables, target dates, and status                              |
+| Timeline          | Events and planned work in chronological order, with stated dependencies  |
+| Project scope     | Objectives, deliverables, exclusions, and scope changes                   |
 
 Start with `.txt` files and one transcript per report.
 

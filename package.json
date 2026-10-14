@@ -1,0 +1,55 @@
+{
+  "name": "transcript-to-project-report",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently --kill-others --names api,web \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "node --watch --env-file-if-exists=.env backend/src/server.js --dev",
+    "dev:frontend": "vite --config frontend/vite.config.js",
+    "lint": "eslint .",
+    "format": "eslint . --fix && prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run lint && npm run format:check",
+    "build": "vite build --config frontend/vite.config.js",
+    "start": "node --env-file-if-exists=.env backend/src/server.js",
+    "test": "node --test backend/tests/*.test.js && vitest run --config frontend/vitest.config.js"
+  },
+  "dependencies": {
+    "@fontsource/noto-sans": "^5.3.0",
+    "@tiptap/extension-list": "^3.31.4",
+    "@tiptap/extension-text-style": "^3.31.4",
+    "@tiptap/pm": "^3.31.4",
+    "@tiptap/react": "^3.31.4",
+    "@tiptap/starter-kit": "^3.31.4",
+    "docx": "^9.10.0",
+    "express": "^5.3.0",
+    "multer": "^2.4.0",
+    "pdfjs-dist": "^6.4.299",
+    "pdfkit": "^0.20.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@vitejs/plugin-react": "^6.1.2",
+    "adm-zip": "^0.6.1",
+    "concurrently": "^10.0.6",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "jsdom": "^26.1.0",
+    "prettier": "^3.9.10",
+    "supertest": "^7.3.1",
+    "vite": "^8.3.4",
+    "vitest": "^4.1.0"
+  }
+}
