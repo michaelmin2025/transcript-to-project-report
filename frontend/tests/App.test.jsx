@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import App from "../src/App.jsx";
 import { SAMPLE_REPORT } from "../../backend/tests/fixtures/report.js";
+import { reportToDocument } from "../../shared/document.js";
 
 const envelope = () => ({
   report: structuredClone(SAMPLE_REPORT),
@@ -317,5 +318,420 @@ describe("prototype report flow", () => {
       expect(content).toContain("Second project information");
       expect(content).not.toContain("First project information");
     }
+  });
+});
+
+describe("saved reports", () => {
+  it("saves edits and restores them after the app is reopened", async () => {
+    const user = userEvent.setup();
+    let stored = null;
+    let generated = 0;
+    fetch.mockImplementation(async (url, options) => {
+      if (url === "/api/config") {
+        return json({ ...config(), persistence: true });
+      }
+      if (url === "/api/reports" && options?.method === "POST") {
+        generated += 1;
+        const report = envelope();
+        stored = {
+          ...report,
+          id: "f03c80f3-3fc4-4149-b1f0-3176dccf0287",
+          updatedAt: report.generatedAt,
+          version: 1,
+          document: reportToDocument(report),
+        };
+        return json(stored);
+      }
+      if (url === "/api/reports") {
+        return json(
+          stored
+            ? [
+                {
+                  id: stored.id,
+                  title: stored.report.title,
+                  sourceName: stored.sourceName,
+                  generatedAt: stored.generatedAt,
+                  updatedAt: stored.updatedAt,
+                  version: stored.version,
+                },
+              ]
+            : [],
+        );
+      }
+      if (options?.method === "PUT") {
+        const update = JSON.parse(options.body);
+        expect(update.version).toBe(stored.version);
+        stored = { ...stored, document: update.document, version: stored.version + 1 };
+      }
+      return json(stored);
+    });
+    const view = render(<App />);
+    await uploadTranscript(user);
+    expect(await screen.findByText("Saved locally")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Edit report" }));
+    const editor = screen.getByRole("textbox", { name: "Report document" }).editor;
+    act(() =>
+      editor.commands.insertContentAt(editor.state.doc.content.size, {
+        type: "paragraph",
+        content: [{ type: "text", text: "Persistent user edit" }],
+      }),
+    );
+    expect(screen.getByText("Unsaved edits")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Done editing" }));
+    expect(await screen.findByText("Saved locally")).toBeTruthy();
+    expect(stored.version).toBe(2);
+    view.unmount();
+    render(<App />);
+    expect(await screen.findByText("Persistent user edit")).toBeTruthy();
+    await user.click(screen.getByRole("tab", { name: "History" }));
+    expect(screen.getByRole("button", { name: "Open Customer portal pilot" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Open Customer portal pilot" }));
+    expect(await screen.findByText("Persistent user edit")).toBeTruthy();
+    expect(generated).toBe(1);
+  });
+
+  it("keeps edits in the editor and shows an error when saving fails", async () => {
+    const user = userEvent.setup();
+    const report = envelope();
+    const stored = {
+      ...report,
+      id: "f03c80f3-3fc4-4149-b1f0-3176dccf0287",
+      updatedAt: report.generatedAt,
+      version: 1,
+      document: reportToDocument(report),
+    };
+    fetch.mockImplementation(async (url, options) => {
+      if (url === "/api/config") {
+        return json({ ...config(), persistence: true });
+      }
+      if (url === "/api/reports") {
+        return json([
+          {
+            id: stored.id,
+            title: stored.report.title,
+            sourceName: stored.sourceName,
+            generatedAt: stored.generatedAt,
+            updatedAt: stored.updatedAt,
+            version: stored.version,
+          },
+        ]);
+      }
+      if (options?.method === "PUT") {
+        return json({ error: { message: "Could not save the report." } }, false);
+      }
+      return json(stored);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Customer portal pilot" });
+    await user.click(screen.getByRole("button", { name: "Edit report" }));
+    const editor = screen.getByRole("textbox", { name: "Report document" }).editor;
+    act(() =>
+      editor.commands.insertContentAt(editor.state.doc.content.size, {
+        type: "paragraph",
+        content: [{ type: "text", text: "Keep my unsaved edit" }],
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Done editing" }));
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      expect.stringContaining("Could not save"),
+    );
+    expect(screen.getByText("Keep my unsaved edit")).toBeTruthy();
+    expect(screen.getByText("Unsaved edits")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Done editing" })).toBeTruthy();
+  });
+});
+
+describe("History tab", () => {
+  it("lists every generated report and saves current edits before reopening an older report", async () => {
+    const user = userEvent.setup();
+    const ids = ["f03c80f3-3fc4-4149-b1f0-3176dccf0287", "a03c80f3-3fc4-4149-b1f0-3176dccf0288"];
+    const records = ids.map((id, index) => {
+      const result = envelope();
+      result.report.title = index ? "Latest project" : "Earlier project";
+      result.sourceName = index ? "latest.pdf" : "earlier.txt";
+      result.generatedAt = index ? "2026-10-13T17:00:00.000Z" : "2026-10-12T15:00:00.000Z";
+      return {
+        ...result,
+        id,
+        updatedAt: result.generatedAt,
+        version: 1,
+        document: reportToDocument(result),
+      };
+    });
+    const methods = [];
+    fetch.mockImplementation(async (url, options) => {
+      methods.push([url, options?.method || "GET"]);
+      if (url === "/api/config") {
+        return json({ ...config(), persistence: true });
+      }
+      if (url === "/api/reports") {
+        return json(
+          [...records].reverse().map(record => ({
+            id: record.id,
+            title: record.report.title,
+            sourceName: record.sourceName,
+            generatedAt: record.generatedAt,
+            updatedAt: record.updatedAt,
+            version: record.version,
+          })),
+        );
+      }
+      const record = records.find(item => url.endsWith(item.id));
+      if (options?.method === "PUT") {
+        const update = JSON.parse(options.body);
+        record.document = update.document;
+        record.version += 1;
+      }
+      return json(record);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Latest project" });
+    await user.click(screen.getByRole("button", { name: "Edit report" }));
+    const editor = screen.getByRole("textbox", { name: "Report document" }).editor;
+    act(() =>
+      editor.commands.insertContentAt(editor.state.doc.content.size, {
+        type: "paragraph",
+        content: [{ type: "text", text: "Save before visiting history" }],
+      }),
+    );
+    await user.click(screen.getByRole("tab", { name: "History" }));
+    const earlier = await screen.findByRole("button", { name: "Open Earlier project" });
+    expect(screen.getByRole("tab", { name: "History" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("button", { name: "Open Latest project" })).toBeTruthy();
+    expect(screen.getByRole("cell", { name: "earlier.txt" })).toBeTruthy();
+    expect(screen.getByRole("cell", { name: "latest.pdf" })).toBeTruthy();
+    expect(JSON.stringify(records[1].document)).toContain("Save before visiting history");
+    await user.click(earlier);
+    expect(await screen.findByRole("heading", { name: "Earlier project" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Report" }).getAttribute("aria-selected")).toBe("true");
+    expect(methods.some(([, method]) => method === "POST")).toBe(false);
+  });
+
+  it("shows an empty history when no reports have been generated", async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation(async url =>
+      url === "/api/config" ? json({ ...config(false), persistence: true }) : json([]),
+    );
+    render(<App />);
+    await user.click(await screen.findByRole("tab", { name: "History" }));
+    expect(await screen.findByText("No saved reports yet.")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "History" }).getAttribute("aria-selected")).toBe("true");
+  });
+});
+
+describe("Uploads tab", () => {
+  const upload = {
+    id: "f03c80f3-3fc4-4149-b1f0-3176dccf0287",
+    name: "interview.pdf",
+    mime: "application/pdf",
+    size: 800,
+    uploadedAt: "2026-10-13T17:00:00.000Z",
+  };
+
+  it("downloads the original file and regenerates a new report that appears in History", async () => {
+    const user = userEvent.setup();
+    let stored = null;
+    const generations = [];
+    fetch.mockImplementation(async (url, options) => {
+      if (url === "/api/config") {
+        return json({ ...config(), persistence: true });
+      }
+      if (url === "/api/uploads") {
+        return json([upload]);
+      }
+      if (url === "/api/reports") {
+        return json(
+          stored
+            ? [
+                {
+                  id: stored.id,
+                  title: stored.report.title,
+                  sourceName: stored.sourceName,
+                  generatedAt: stored.generatedAt,
+                  updatedAt: stored.updatedAt,
+                  version: stored.version,
+                },
+              ]
+            : [],
+        );
+      }
+      if (options?.method === "POST") {
+        generations.push(url);
+        expect(options.body).toBeUndefined();
+        const result = envelope();
+        result.sourceName = upload.name;
+        result.report.title = "Regenerated project";
+        stored = {
+          ...result,
+          id: "a03c80f3-3fc4-4149-b1f0-3176dccf0288",
+          uploadId: upload.id,
+          updatedAt: result.generatedAt,
+          version: 1,
+          document: reportToDocument(result),
+        };
+        return json(stored);
+      }
+      return json(stored);
+    });
+    render(<App />);
+    await user.click(await screen.findByRole("tab", { name: "Uploads" }));
+    expect(await screen.findByRole("rowheader", { name: "interview.pdf" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Download file" }).getAttribute("href")).toBe(
+      "/api/uploads/" + upload.id + "/file",
+    );
+    await user.click(screen.getByRole("button", { name: "Regenerate report from interview.pdf" }));
+    expect(await screen.findByRole("heading", { name: "Regenerated project" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Report" }).getAttribute("aria-selected")).toBe("true");
+    expect(generations).toEqual(["/api/uploads/" + upload.id + "/reports"]);
+    await user.click(screen.getByRole("tab", { name: "History" }));
+    expect(await screen.findByRole("button", { name: "Open Regenerated project" })).toBeTruthy();
+  });
+
+  it("keeps the saved upload available when regeneration fails", async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation(async (url, options) => {
+      if (url === "/api/config") {
+        return json({ ...config(), persistence: true });
+      }
+      if (url === "/api/uploads") {
+        return json([upload]);
+      }
+      if (options?.method === "POST") {
+        return json({ error: { message: "DeepSeek is busy. Please try again." } }, false);
+      }
+      return json([]);
+    });
+    render(<App />);
+    await user.click(await screen.findByRole("tab", { name: "Uploads" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Regenerate report from interview.pdf" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      expect.stringContaining("DeepSeek is busy"),
+    );
+    expect(screen.getByRole("tab", { name: "Uploads" }).getAttribute("aria-selected")).toBe("true");
+    expect(
+      screen.getByRole("button", { name: "Regenerate report from interview.pdf" }).disabled,
+    ).toBe(false);
+  });
+
+  it("allows file downloads but disables regeneration when the provider is not configured", async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation(async url =>
+      url === "/api/config"
+        ? json({ ...config(false), persistence: true })
+        : url === "/api/uploads"
+          ? json([upload])
+          : json([]),
+    );
+    render(<App />);
+    await user.click(await screen.findByRole("tab", { name: "Uploads" }));
+    expect(
+      (await screen.findByRole("button", { name: "Regenerate report from interview.pdf" }))
+        .disabled,
+    ).toBe(true);
+    expect(screen.getByRole("link", { name: "Download file" })).toBeTruthy();
+  });
+});
+
+describe("report deletion", () => {
+  it("requires confirmation, supports cancelling, and clears a deleted report from the editor", async () => {
+    const user = userEvent.setup();
+    const result = envelope();
+    let stored = {
+      ...result,
+      id: "f03c80f3-3fc4-4149-b1f0-3176dccf0287",
+      updatedAt: result.generatedAt,
+      version: 1,
+      document: reportToDocument(result),
+    };
+    const deletions = [];
+    fetch.mockImplementation(async (url, options) => {
+      if (url === "/api/config") {
+        return json({ ...config(), persistence: true });
+      }
+      if (url === "/api/reports") {
+        return json(
+          stored
+            ? [
+                {
+                  id: stored.id,
+                  title: stored.report.title,
+                  sourceName: stored.sourceName,
+                  generatedAt: stored.generatedAt,
+                  updatedAt: stored.updatedAt,
+                  version: stored.version,
+                },
+              ]
+            : [],
+        );
+      }
+      if (options?.method === "DELETE") {
+        deletions.push(url);
+        stored = null;
+        return json({ deleted: true });
+      }
+      return json(stored);
+    });
+    render(<App />);
+    await user.click(await screen.findByRole("tab", { name: "History" }));
+    await user.click(await screen.findByRole("button", { name: "Delete Customer portal pilot" }));
+    expect(screen.getByRole("group", { name: "Delete report confirmation" })).toBeTruthy();
+    expect(deletions).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("group", { name: "Delete report confirmation" })).toBeNull();
+    expect(deletions).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Delete Customer portal pilot" }));
+    await user.click(screen.getByRole("button", { name: "Delete", exact: true }));
+    expect(await screen.findByText("No saved reports yet.")).toBeTruthy();
+    expect(deletions).toEqual(["/api/reports/f03c80f3-3fc4-4149-b1f0-3176dccf0287"]);
+    await user.click(screen.getByRole("tab", { name: "Report" }));
+    expect(screen.getByRole("heading", { name: "Your report will appear here" })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Report document" })).toBeNull();
+  });
+
+  it("keeps the report in History if deletion fails", async () => {
+    const user = userEvent.setup();
+    const result = envelope();
+    const stored = {
+      ...result,
+      id: "f03c80f3-3fc4-4149-b1f0-3176dccf0287",
+      updatedAt: result.generatedAt,
+      version: 1,
+      document: reportToDocument(result),
+    };
+    fetch.mockImplementation(async (url, options) => {
+      if (url === "/api/config") {
+        return json({ ...config(), persistence: true });
+      }
+      if (url === "/api/reports") {
+        return json([
+          {
+            id: stored.id,
+            title: stored.report.title,
+            sourceName: stored.sourceName,
+            generatedAt: stored.generatedAt,
+            updatedAt: stored.updatedAt,
+            version: stored.version,
+          },
+        ]);
+      }
+      if (options?.method === "DELETE") {
+        return json({ error: { message: "Could not delete the report." } }, false);
+      }
+      return json(stored);
+    });
+    render(<App />);
+    await user.click(await screen.findByRole("tab", { name: "History" }));
+    await user.click(await screen.findByRole("button", { name: "Delete Customer portal pilot" }));
+    await user.click(screen.getByRole("button", { name: "Delete", exact: true }));
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      expect.stringContaining("Could not delete"),
+    );
+    expect(screen.getByRole("button", { name: "Open Customer portal pilot" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Delete report confirmation" })).toBeTruthy();
   });
 });

@@ -215,7 +215,10 @@ test("DeepSeek receives JSON mode and an untrusted transcript separately from in
         ),
       );
       assert.equal(payload.response_format.type, "json_object");
-      assert.equal(payload.thinking.type, "disabled");
+      assert.equal(payload.thinking.type, "enabled");
+      assert.equal(payload.reasoning_effort, "high");
+      assert.equal(payload.max_tokens, 64000);
+      assert.ok(!Object.hasOwn(payload, "temperature"));
       assert.ok(GENERATION_INSTRUCTIONS.includes("never instructions"));
       assert.ok(GENERATION_INSTRUCTIONS.includes("suggestion is not approval"));
       assert.ok(GENERATION_INSTRUCTIONS.includes("Never use today's date"));

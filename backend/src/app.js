@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { MAX_FILE_BYTES, MAX_TRANSCRIPT_CHARACTERS, ReportSchema } from "../../shared/report.js";
 import { DocumentExportSchema, DOWNLOAD_FORMATS } from "../../shared/document.js";
 import { AppError } from "./errors.js";
+import { ReportUpdateSchema } from "../../shared/saved-report.js";
 import { exportDocument } from "./export.js";
 import { DEFAULT_MODEL, generateReport } from "./generate.js";
 import { extractTranscript } from "./transcript.js";
@@ -17,8 +18,16 @@ export function createApp({
   model = process.env.DEEPSEEK_MODEL || DEFAULT_MODEL,
   generate = generateReport,
   staticDirectory = frontendDirectory,
+  store = null,
+  telemetry = null,
+  accessControl = null,
+  jobTracking = null,
 } = {}) {
   const app = express();
+  if (jobTracking && (!store?.jobs || !Number.isInteger(jobTracking.retentionDays)
+    || jobTracking.retentionDays < 7 || jobTracking.retentionDays > 365)) {
+    throw new Error("Job tracking requires durable storage and valid retention.");
+  }
   let activeGenerations = 0;
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -33,18 +42,53 @@ export function createApp({
     }
     next();
   });
+  if (accessControl) {
+    app.use(accessControl);
+  }
   app.use(express.json({ limit: "1mb" }));
-  app.get("/health", (_request, response) => response.json({ status: "ok" }));
+  app.get("/health", (_request, response) => {
+    telemetry?.heartbeat();
+    response.json({ status: "ok" });
+  });
   app.get("/api/config", (_request, response) =>
     response.json({
       provider: "DeepSeek",
       model,
       configured: Boolean(apiKey.trim()),
+      persistence: Boolean(store),
       maxFileBytes: MAX_FILE_BYTES,
       maxTranscriptCharacters: MAX_TRANSCRIPT_CHARACTERS,
     }),
   );
-  app.post("/api/reports", upload.single("transcript"), async (request, response) => {
+
+  function reportStore() {
+    if (!store) {
+      throw new AppError(503, "STORAGE_UNAVAILABLE", "Local report storage is not configured.");
+    }
+    return store;
+  }
+
+  app.get("/api/reports", (_request, response) => response.json(reportStore().list()));
+  app.get("/api/reports/:id", (request, response) =>
+    response.json(reportStore().get(request.params.id)),
+  );
+  app.delete("/api/reports/:id", (request, response) => {
+    reportStore().remove(request.params.id);
+    response.json({ deleted: true });
+  });
+  app.put("/api/reports/:id", (request, response) => {
+    const parsed = ReportUpdateSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new AppError(
+        400,
+        "INVALID_REPORT_UPDATE",
+        "The edited document or saved version is invalid. Review your edits before saving.",
+      );
+    }
+    response.json(reportStore().save(request.params.id, parsed.data));
+  });
+
+  async function createGeneratedReport(request, response, uploadId = null) {
     if (activeGenerations >= 3) {
       throw new AppError(
         429,
@@ -62,22 +106,79 @@ export function createApp({
 
     response.on("close", cancel);
     activeGenerations += 1;
+    let generationStarted = false;
+    let jobId = null;
     try {
-      const transcript = await extractTranscript(request.file, { signal: controller.signal });
+      const savedUpload = uploadId ? reportStore().getUpload(uploadId) : null;
+      const file = savedUpload
+        ? { originalname: savedUpload.name, mimetype: savedUpload.mime, buffer: savedUpload.buffer }
+        : request.file;
+      const transcript = await extractTranscript(file, { signal: controller.signal });
+      const source = savedUpload || (store ? store.saveUpload(file) : null);
+      if (jobTracking) {
+        jobId = store.jobs.start(source.id, jobTracking.retentionDays).job_id;
+        response.set("X-Job-Id", jobId);
+      }
+      generationStarted = true;
       const report = ReportSchema.parse(
         await generate(transcript, { apiKey, model, signal: controller.signal }),
       );
-      response.json({
+      const envelope = {
         report,
-        sourceName: path.basename(request.file.originalname).slice(0, 255),
+        sourceName: source?.name || path.basename(file.originalname).slice(0, 255),
         generatedAt: new Date().toISOString(),
-      });
+      };
+      response.json(store ? store.create(envelope, source.id, jobId) : envelope);
+      telemetry?.recordGeneration("success");
+    }
+    catch (error) {
+      const outcome = controller.signal.aborted || error?.status === 499
+        ? "cancelled"
+        : generationStarted || !(error instanceof AppError) || error.status >= 500
+          ? "failure"
+          : "rejected";
+      if (jobId) {
+        try {
+          store.jobs.finish(jobId, outcome === "cancelled" ? "CANCELLED" : "FAILED");
+        }
+        catch {
+          // Report/SDK errors and request content must not enter routine logs.
+          console.error("{\"event\":\"job_outcome_write_failed\"}");
+        }
+      }
+      telemetry?.recordGeneration(outcome);
+      throw error;
     }
     finally {
       activeGenerations -= 1;
       response.off("close", cancel);
     }
+  }
+
+  app.get("/api/jobs/:id", (request, response) => {
+    if (!jobTracking) {
+      throw new AppError(404, "JOB_TRACKING_DISABLED", "Job tracking is not enabled.");
+    }
+    const state = store.jobs.get(request.params.id);
+    response.json({
+      ...state.metadata,
+      sync_state: state.metadata.expires_at <= Math.floor(Date.now() / 1000)
+        ? "expired"
+        : state.synced ? "synced" : "pending",
+    });
   });
+
+  app.post("/api/reports", upload.single("transcript"), (request, response) =>
+    createGeneratedReport(request, response),
+  );
+  app.get("/api/uploads", (_request, response) => response.json(reportStore().listUploads()));
+  app.get("/api/uploads/:id/file", (request, response) => {
+    const file = reportStore().getUpload(request.params.id);
+    response.type(file.mime).attachment(file.name).send(file.buffer);
+  });
+  app.post("/api/uploads/:id/reports", (request, response) =>
+    createGeneratedReport(request, response, request.params.id),
+  );
   app.post("/api/reports/export", async (request, response) => {
     const parsed = DocumentExportSchema.safeParse(request.body);
     if (!parsed.success) {

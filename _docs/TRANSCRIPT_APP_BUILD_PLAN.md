@@ -15,7 +15,7 @@ No required meeting date or setup form.
 | Executive summary | Progress, key decisions, risks, blockers, and leadership attention needed |
 | Task list         | Tasks, owners, status, and dates                                          |
 | Milestones        | Major deliverables, target dates, and status                              |
-| Timeline          | Events and planned work in chronological order, with stated dependencies  |
+| Timeline          | Events and planned work in chronological order, with stated dependencies  |![alt text](image.png)
 | Project scope     | Objectives, deliverables, exclusions, and scope changes                   |
 
 Start with `.txt` files and one transcript per report.

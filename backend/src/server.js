@@ -2,7 +2,13 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createApp } from "./app.js";
+import { createReportStore } from "./store.js";
+import { createTelemetry } from "./telemetry.js";
+import { loadAccessControl } from "./auth.js";
+import { loadJobConfiguration, startJobSynchronization } from "./job-runtime.js";
 
+const accessControl = loadAccessControl();
+const jobConfiguration = loadJobConfiguration();
 const development = process.argv.includes("--dev");
 const frontendDirectory = process.env.FRONTEND_DIST
   ? path.resolve(process.env.FRONTEND_DIST)
@@ -19,7 +25,14 @@ else if (!development && !existsSync(index)) {
   process.exitCode = 1;
 }
 else {
-  const server = createApp({ staticDirectory: development ? null : frontendDirectory }).listen(
+  const databasePath = process.env.REPORTS_DB_PATH
+    ? path.resolve(process.env.REPORTS_DB_PATH)
+    : fileURLToPath(new URL("../data/reports.sqlite", import.meta.url));
+  const store = createReportStore(databasePath);
+  const jobRuntime = jobConfiguration ? startJobSynchronization(store, jobConfiguration) : null;
+  const jobTracking = jobConfiguration ? { retentionDays: jobConfiguration.retention_days } : null;
+  const telemetry = createTelemetry({ filename: process.env.APP_TELEMETRY_PATH || null });
+  const server = createApp({ staticDirectory: development ? null : frontendDirectory, store, telemetry, accessControl, jobTracking }).listen(
     port,
     host,
     () => {
@@ -29,7 +42,13 @@ else {
       }
     },
   );
-  server.on("error", (error) => {
+  server.once("close", async () => {
+    await jobRuntime?.stop();
+    store.close();
+  });
+  server.on("error", async (error) => {
+    await jobRuntime?.stop();
+    store.close();
     console.error(
       error.code === "EADDRINUSE"
         ? `Port ${port} is in use. Choose another PORT in .env.`

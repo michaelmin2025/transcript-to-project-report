@@ -152,9 +152,31 @@ main {
   cursor: pointer;
 }
 .processing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 24px 0;
   font-size: 13px;
   color: var(--accent);
+}
+.generation-spinner {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: 2px solid var(--line);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: generation-spin 0.8s linear infinite;
+}
+@keyframes generation-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .generation-spinner {
+    animation: none;
+  }
 }
 .empty-state {
   padding: 90px 20px;
@@ -375,4 +397,74 @@ a {
     align-items: start;
     flex-direction: column;
   }
+}
+
+.save-status {
+  font-size: 12px;
+  color: var(--accent);
+  margin: 0 0 12px;
+}
+
+.report-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 24px;
+}
+.report-tabs button {
+  padding: 12px 18px;
+  background: transparent;
+  color: #68766c;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  font-weight: 600;
+}
+.report-tabs button[aria-selected="true"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.history-table-wrapper {
+  overflow-x: auto;
+}
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  font-size: 13px;
+}
+.history-table th,
+.history-table td {
+  text-align: left;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.history-table thead {
+  background: #e6eae6;
+}
+.history-table .text-button {
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.history-table time {
+  white-space: nowrap;
+}
+
+.upload-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.delete-confirmation {
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: white;
+}
+.delete-confirmation p {
+  margin: 0 0 12px;
 }

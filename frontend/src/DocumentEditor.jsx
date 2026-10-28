@@ -26,11 +26,12 @@ export const editorExtensions = () => [
   ListItem.extend({ content: "paragraph+" }),
 ];
 
-export default function DocumentEditor({ initialDocument, editing, disabled, ref }) {
+export default function DocumentEditor({ initialDocument, editing, disabled, ref, onChange }) {
   const editor = useEditor({
     extensions: editorExtensions(),
     content: initialDocument,
     editable: editing && !disabled,
+    onUpdate: () => onChange?.(),
     editorProps: {
       attributes: {
         "aria-label": "Report document",
