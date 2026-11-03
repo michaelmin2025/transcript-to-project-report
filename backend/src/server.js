@@ -6,9 +6,11 @@ import { createReportStore } from "./store.js";
 import { createTelemetry } from "./telemetry.js";
 import { loadAccessControl } from "./auth.js";
 import { loadJobConfiguration, startJobSynchronization } from "./job-runtime.js";
+import { loadArchiveConfiguration, startArchiveSynchronization } from "./archive-runtime.js";
 
 const accessControl = loadAccessControl();
 const jobConfiguration = loadJobConfiguration();
+const archiveConfiguration = loadArchiveConfiguration();
 const development = process.argv.includes("--dev");
 const frontendDirectory = process.env.FRONTEND_DIST
   ? path.resolve(process.env.FRONTEND_DIST)
@@ -28,11 +30,15 @@ else {
   const databasePath = process.env.REPORTS_DB_PATH
     ? path.resolve(process.env.REPORTS_DB_PATH)
     : fileURLToPath(new URL("../data/reports.sqlite", import.meta.url));
-  const store = createReportStore(databasePath);
+  const store = createReportStore(databasePath, {
+    archiveEnabled: Boolean(archiveConfiguration),
+    archiveRetentionDays: archiveConfiguration?.retention_days || 30,
+  });
+  const archiveRuntime = archiveConfiguration ? startArchiveSynchronization(store, archiveConfiguration) : null;
   const jobRuntime = jobConfiguration ? startJobSynchronization(store, jobConfiguration) : null;
   const jobTracking = jobConfiguration ? { retentionDays: jobConfiguration.retention_days } : null;
   const telemetry = createTelemetry({ filename: process.env.APP_TELEMETRY_PATH || null });
-  const server = createApp({ staticDirectory: development ? null : frontendDirectory, store, telemetry, accessControl, jobTracking }).listen(
+  const server = createApp({ staticDirectory: development ? null : frontendDirectory, store, telemetry, accessControl, jobTracking, archiveTracking: Boolean(archiveConfiguration) }).listen(
     port,
     host,
     () => {
@@ -43,11 +49,11 @@ else {
     },
   );
   server.once("close", async () => {
-    await jobRuntime?.stop();
+    await Promise.all([jobRuntime?.stop(), archiveRuntime?.stop()]);
     store.close();
   });
   server.on("error", async (error) => {
-    await jobRuntime?.stop();
+    await Promise.all([jobRuntime?.stop(), archiveRuntime?.stop()]);
     store.close();
     console.error(
       error.code === "EADDRINUSE"

@@ -10,6 +10,7 @@ import { ReportUpdateSchema } from "../../shared/saved-report.js";
 import { exportDocument } from "./export.js";
 import { DEFAULT_MODEL, generateReport } from "./generate.js";
 import { extractTranscript } from "./transcript.js";
+import { uploadArchiveKey, reportArchiveKey } from "./transcript-archive.js";
 
 const frontendDirectory = fileURLToPath(new URL("../../frontend/dist/", import.meta.url));
 
@@ -22,11 +23,15 @@ export function createApp({
   telemetry = null,
   accessControl = null,
   jobTracking = null,
+  archiveTracking = false,
 } = {}) {
   const app = express();
   if (jobTracking && (!store?.jobs || !Number.isInteger(jobTracking.retentionDays)
     || jobTracking.retentionDays < 7 || jobTracking.retentionDays > 365)) {
     throw new Error("Job tracking requires durable storage and valid retention.");
+  }
+  if (archiveTracking && (!store?.archives || !store.archiveEnabled)) {
+    throw new Error("Archive tracking requires enabled durable archive storage.");
   }
   let activeGenerations = 0;
   const upload = multer({
@@ -115,6 +120,9 @@ export function createApp({
         : request.file;
       const transcript = await extractTranscript(file, { signal: controller.signal });
       const source = savedUpload || (store ? store.saveUpload(file) : null);
+      if (archiveTracking) {
+        store.ensureUploadArchive(source.id);
+      }
       if (jobTracking) {
         jobId = store.jobs.start(source.id, jobTracking.retentionDays).job_id;
         response.set("X-Job-Id", jobId);
@@ -128,7 +136,11 @@ export function createApp({
         sourceName: source?.name || path.basename(file.originalname).slice(0, 255),
         generatedAt: new Date().toISOString(),
       };
-      response.json(store ? store.create(envelope, source.id, jobId) : envelope);
+      const saved = store ? store.create(envelope, source.id, jobId) : envelope;
+      if (archiveTracking) {
+        response.set("X-Archive-Report-Key", reportArchiveKey(saved.id, saved.version));
+      }
+      response.json(saved);
       telemetry?.recordGeneration("success");
     }
     catch (error) {
@@ -166,6 +178,22 @@ export function createApp({
         ? "expired"
         : state.synced ? "synced" : "pending",
     });
+  });
+
+  function archiveJournal() {
+    if (!archiveTracking) {
+      throw new AppError(404, "ARCHIVE_DISABLED", "Archive tracking is not enabled.");
+    }
+    return store.archives;
+  }
+
+  app.get("/api/archives/uploads/:id", (request, response) => {
+    const journal = archiveJournal();
+    const upload = store.getUpload(request.params.id);
+    response.json(journal.get(uploadArchiveKey(upload.id, upload.mime)));
+  });
+  app.get("/api/archives/reports/:id/versions/:version", (request, response) => {
+    response.json(archiveJournal().get(reportArchiveKey(request.params.id, Number(request.params.version))));
   });
 
   app.post("/api/reports", upload.single("transcript"), (request, response) =>

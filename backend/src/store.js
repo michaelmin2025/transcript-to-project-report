@@ -13,8 +13,9 @@ import {
 } from "../../shared/saved-report.js";
 import { AppError } from "./errors.js";
 import { createJobJournal } from "./job-journal.js";
+import { createArchiveJournal } from "./archive-journal.js";
 
-export function createReportStore(filename) {
+export function createReportStore(filename, { archiveEnabled = false, archiveRetentionDays = 30 } = {}) {
   if (filename !== ":memory:") {
     mkdirSync(path.dirname(path.resolve(filename)), { recursive: true });
   }
@@ -35,6 +36,7 @@ export function createReportStore(filename) {
   }
   database.exec("PRAGMA foreign_keys = ON");
   const jobs = createJobJournal(database);
+  const archives = createArchiveJournal(database, { retentionDays: archiveRetentionDays });
   const insertUpload = database.prepare("INSERT INTO uploads VALUES (?, ?, ?, ?, ?, ?)");
   const selectUpload = database.prepare("SELECT * FROM uploads WHERE id = ?");
   const uploadListing = database.prepare(
@@ -102,6 +104,8 @@ export function createReportStore(filename) {
         if (job.status !== "PROCESSING" || job.upload_id !== uploadId) {
           throw new AppError(409, "JOB_STATE_CONFLICT", "The job does not match this report.");
         }
+      }
+      if (jobId || archiveEnabled) {
         database.exec("BEGIN IMMEDIATE");
       }
       try {
@@ -118,11 +122,16 @@ export function createReportStore(filename) {
         );
         if (jobId) {
           jobs.finish(jobId, "COMPLETED", record.id);
+        }
+        if (archiveEnabled) {
+          archives.enqueueReport(record);
+        }
+        if (jobId || archiveEnabled) {
           database.exec("COMMIT");
         }
       }
       catch (error) {
-        if (jobId) {
+        if (jobId || archiveEnabled) {
           database.exec("ROLLBACK");
         }
         throw error;
@@ -143,22 +152,38 @@ export function createReportStore(filename) {
           .join("")
           .trim()
           .slice(0, 160) || get(id).report.title;
-      const result = update.run(
-        title,
-        JSON.stringify(document),
-        new Date().toISOString(),
-        id,
-        version,
-      );
-      if (!result.changes) {
-        get(id);
-        throw new AppError(
-          409,
-          "REPORT_CONFLICT",
-          "This report was changed in another window. Reopen it to load the latest saved version.",
-        );
+      if (archiveEnabled) {
+        database.exec("BEGIN IMMEDIATE");
       }
-      return get(id);
+      try {
+        const result = update.run(
+          title,
+          JSON.stringify(document),
+          new Date().toISOString(),
+          id,
+          version,
+        );
+        if (!result.changes) {
+          get(id);
+          throw new AppError(
+            409,
+            "REPORT_CONFLICT",
+            "This report was changed in another window. Reopen it to load the latest saved version.",
+          );
+        }
+        const saved = get(id);
+        if (archiveEnabled) {
+          archives.enqueueReport(saved);
+          database.exec("COMMIT");
+        }
+        return saved;
+      }
+      catch (error) {
+        if (archiveEnabled) {
+          database.exec("ROLLBACK");
+        }
+        throw error;
+      }
     });
   }
 
@@ -168,10 +193,29 @@ export function createReportStore(filename) {
 
   function remove(id) {
     return safely(() => {
-      const result = database.prepare("DELETE FROM reports WHERE id = ?").run(id);
-      if (!result.changes) {
-        throw new AppError(404, "REPORT_NOT_FOUND", "The saved report was not found.");
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const result = database.prepare("DELETE FROM reports WHERE id = ?").run(id);
+        if (!result.changes) {
+          throw new AppError(404, "REPORT_NOT_FOUND", "The saved report was not found.");
+        }
+        archives.removeReport(id);
+        database.exec("COMMIT");
       }
+      catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  function ensureUploadArchive(id) {
+    return safely(() => {
+      if (!archiveEnabled) {
+        return null;
+      }
+      const upload = getUpload(id);
+      return archives.enqueueUpload(upload, upload.buffer);
     });
   }
 
@@ -185,14 +229,29 @@ export function createReportStore(filename) {
         size: file.buffer.length,
         uploadedAt: new Date().toISOString(),
       });
-      insertUpload.run(
-        record.id,
-        record.name,
-        record.mime,
-        record.size,
-        record.uploadedAt,
-        file.buffer,
-      );
+      if (archiveEnabled) {
+        database.exec("BEGIN IMMEDIATE");
+      }
+      try {
+        insertUpload.run(
+          record.id,
+          record.name,
+          record.mime,
+          record.size,
+          record.uploadedAt,
+          file.buffer,
+        );
+        if (archiveEnabled) {
+          archives.enqueueUpload(record, file.buffer);
+          database.exec("COMMIT");
+        }
+      }
+      catch (error) {
+        if (archiveEnabled) {
+          database.exec("ROLLBACK");
+        }
+        throw error;
+      }
       return record;
     });
   }
@@ -222,5 +281,5 @@ export function createReportStore(filename) {
     database.close();
   }
 
-  return { create, get, save, list, remove, saveUpload, getUpload, listUploads, jobs, close };
+  return { create, get, save, list, remove, saveUpload, getUpload, listUploads, jobs, archives, ensureUploadArchive, archiveEnabled, close };
 }
